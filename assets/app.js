@@ -1,8 +1,8 @@
-/* assets/app.js
-   Frontend for Phish-Defender.
-   UPDATE: set WORKER_BASE to your worker URL (no trailing slash)
-*/
-const WORKER_BASE = 'https://phish-checker-api.phisher.workers.dev/'; // e.g. https://phish-proxy.YOUR.workers.dev
+/* Frontend for Phish Defender recon console
+ * Set WORKER_BASE to your Cloudflare Worker URL (no trailing slash)
+ * Example: https://phish-defender-api.yourname.workers.dev
+ */
+const WORKER_BASE = 'https://phish-checker-api.phisher.workers.dev';
 
 // DOM helpers
 const $ = id => document.getElementById(id);
@@ -14,10 +14,10 @@ function loadTheme(){
   const t = localStorage.getItem('pd_theme') || 'dark';
   document.body.classList.toggle('theme-light', t === 'light');
 }
-themeToggle.onclick = () => {
+themeToggle.addEventListener('click', () => {
   const isLight = document.body.classList.toggle('theme-light');
   localStorage.setItem('pd_theme', isLight ? 'light' : 'dark');
-};
+});
 loadTheme();
 
 // Tabs
@@ -26,309 +26,394 @@ document.querySelectorAll('.tab').forEach(b => {
     document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
     b.classList.add('active');
     const tab = b.dataset.tab;
-    document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
-    document.getElementById(tab).classList.remove('hidden');
+    document.querySelectorAll('.panel').forEach(p => {
+      if (p.id && p.id.startsWith('tab-')) {
+        p.classList.add('hidden');
+      }
+    });
+    $(tab).classList.remove('hidden');
   });
 });
 
-// utility: show provider block
-function renderProviders(container, providers, featureFilter) {
+// ---------- Shared helpers ----------
+
+async function postJSON(path, body){
+  const res = await fetch(WORKER_BASE + path, {
+    method:'POST',
+    headers:{ 'Content-Type':'application/json' },
+    body: JSON.stringify(body || {})
+  });
+  const text = await res.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch(e){ json = { raw:text, parseError:String(e) }; }
+  if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText);
+  return json;
+}
+
+// Very lightweight verdict inference using simple keyword heuristics.
+// This is intentionally conservative and just for scoring / badges.
+function inferVerdict(provider){
+  const name = provider.name || '';
+  if (provider.ok === false && provider.error) return 'error';
+
+  const payload = JSON.stringify(provider.raw || provider.analysis || provider.result || provider).toLowerCase();
+
+  let maliciousHits = 0;
+  let suspiciousHits = 0;
+
+  if (payload.includes('malicious') || payload.includes('"phishing"') || payload.includes('malware')) maliciousHits++;
+  if (payload.includes('suspicious') || payload.includes('grayware') || payload.includes('unknown')) suspiciousHits++;
+
+  if (maliciousHits > 0) return 'malicious';
+  if (suspiciousHits > 0) return 'suspicious';
+
+  // Some feeds encode severity numerically; basic hinting
+  if (payload.includes('"high"') || payload.includes('"critical"')) return 'suspicious';
+
+  return 'safe';
+}
+
+// Combined score: average weight of all non-error providers.
+function updateCombinedScore(providers){
+  if (!providers || !providers.length){
+    $('combined-fill').style.width = '0%';
+    $('combined-percent').textContent = 'No data';
+    return;
+  }
+  let scores = [];
+  for (const p of providers){
+    const v = inferVerdict(p);
+    if (v === 'error') continue;
+    if (v === 'malicious') scores.push(95);
+    else if (v === 'suspicious') scores.push(60);
+    else scores.push(10);
+  }
+  if (!scores.length){
+    $('combined-fill').style.width = '0%';
+    $('combined-percent').textContent = 'No reliable providers';
+    return;
+  }
+  const avg = Math.round(scores.reduce((a,b)=>a+b,0) / scores.length);
+  $('combined-fill').style.width = avg + '%';
+  let label = 'Low risk';
+  if (avg >= 66) label = 'High risk';
+  else if (avg >= 31) label = 'Suspicious';
+  $('combined-percent').textContent = `Final risk score: ${avg}% (${label})`;
+}
+
+// Render providers into a container, filtering by feature.
+function renderProviders(container, providers, feature){
   container.innerHTML = '';
-  // Group providers by feature relevance using a small mapping
+
   const featureMap = {
-    url: ['VirusTotal','urlscan.io','URLHaus','AlienVault OTX','Filescan.io','MalShare','RapidAPI','Arya.io'],
-    email: ['AbuseIPDB','AlienVault OTX'],
+    url: ['VirusTotal','urlscan.io','URLHaus','AlienVault OTX','AbuseIPDB','Filescan.io','MalShare'],
+    bulk: ['VirusTotal','URLHaus','AlienVault OTX','Filescan.io','MalShare'],
+    email: ['DNS TXT (DoH)','AlienVault OTX'],
     file: ['VirusTotal','Filescan.io','MalShare']
   };
 
-  // Keep providers only relevant to the selected feature
-  const filtered = providers.filter(p => {
-    if (!featureFilter) return true;
-    const list = featureMap[featureFilter] || [];
-    return list.includes(p.name) || (p.name && p.name.toLowerCase().includes(featureFilter));
-  });
+  const allowed = feature ? (featureMap[feature] || []) : null;
+
+  const filtered = allowed
+    ? providers.filter(p => allowed.includes(p.name || ''))
+    : providers.slice();
 
   filtered.forEach(p => {
     const div = document.createElement('div');
     div.className = 'provider';
+
     const verdict = inferVerdict(p);
-    div.innerHTML = `
-      <div>
-        <div class="title"><strong>${escapeHtml(p.name || 'unknown')}</strong></div>
-        <div class="meta">${escapeHtml(providerSummaryText(p))}</div>
-      </div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <div class="badge ${verdict}">${verdict}</div>
-        <button class="btn raw-btn">Raw</button>
-      </div>
+    const badge = document.createElement('span');
+    badge.classList.add('badge');
+    if (verdict === 'safe') badge.classList.add('safe');
+    else if (verdict === 'suspicious') badge.classList.add('suspicious');
+    else if (verdict === 'malicious') badge.classList.add('malicious');
+    else badge.classList.add('error');
+
+    badge.textContent =
+      verdict === 'safe' ? 'SAFE' :
+      verdict === 'suspicious' ? 'SUSPICIOUS' :
+      verdict === 'malicious' ? 'MALICIOUS' :
+      'ERROR';
+
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const extra = p.note || p.error || '';
+    meta.innerHTML = `
+      <div class="provider-name">${p.name || 'Unknown provider'}</div>
+      <div class="provider-extra">${extra || (p.ok === false ? 'No signal / not configured' : 'OK')}</div>
     `;
-    // raw btn
-    div.querySelector('.raw-btn').addEventListener('click', () => {
-      $('raw-output').textContent = JSON.stringify(p, null, 2);
-      // switch to raw tab
-      document.querySelector('[data-tab="tab-raw"]').click();
-    });
+
+    div.appendChild(meta);
+    div.appendChild(badge);
     container.appendChild(div);
   });
+
+  updateCombinedScore(filtered.length ? filtered : providers);
 }
 
-// Combined percent calculation
-function scoreFromProviders(providers){
-  if(!providers || providers.length===0) return 0;
-  // map verdict to number: safe=0, suspicious=50, malicious=100
-  const mapV = v => v === 'malicious' ? 100 : v === 'suspicious' ? 50 : 0;
-  const scores = providers.map(p => mapV(inferVerdict(p)));
-  const avg = Math.round(scores.reduce((a,b)=>a+b,0)/scores.length);
-  return avg;
+// Basic CSV parser for small, simple CSV files.
+function parseCsv(text){
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (!lines.length) return [];
+  const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+  const urlIdx = headers.indexOf('url');
+  const labelIdx = headers.indexOf('label');
+  if (urlIdx === -1) throw new Error('CSV must contain a "url" header in the first row');
+
+  return lines.slice(1).map(line => {
+    const cols = line.split(',');
+    if (!cols[urlIdx]) return null;
+    return {
+      url: cols[urlIdx].trim(),
+      label: labelIdx >= 0 ? (cols[labelIdx] || '').trim() : ''
+    };
+  }).filter(Boolean);
 }
 
-// small helpers
-function escapeHtml(s){ if(s==null) return ''; return String(s).replace(/[&<>"']/g, (m)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[m]));}
-function inferVerdict(p){
-  if(!p) return 'suspicious';
-  if(p.error) return 'suspicious';
-  // virusTotal
-  if(p.name && /virus/i.test(p.name)){
-    const stats = p.analysis?.data?.attributes?.stats || p.raw?.data?.attributes?.last_analysis_stats;
-    if(stats){
-      if(stats.malicious && stats.malicious>0) return 'malicious';
-      if(stats.suspicious && stats.suspicious>0) return 'suspicious';
-      return 'safe';
-    }
-  }
-  if(p.name && /urlscan/i.test(p.name)){
-    const r = p.result || p.raw;
-    if(r && (r.verdicts || r.verdict || (r.page && r.page.verdicts))) {
-      // best-effort -> check textual content for 'malicious' or 'phish'
-      const txt = JSON.stringify(r).toLowerCase();
-      if(txt.includes('malicious')||txt.includes('phish')) return 'malicious';
-      return 'safe';
-    }
-  }
-  if(p.name && /urlhaus/i.test(p.name)){
-    const raw = p.raw;
-    if(raw && typeof raw === 'object' && raw.query_status && /ok|found/i.test(raw.query_status)) return 'malicious';
-  }
-  if(p.name && /abuseipdb/i.test(p.name)){
-    const raw = p.raw;
-    if(raw && raw.data && raw.data.abuseConfidenceScore && raw.data.abuseConfidenceScore>30) return 'suspicious';
-    return 'safe';
-  }
-  if(p.name && /filescan|malshare/i.test(p.name)){
-    const txt = JSON.stringify(p.raw||'').toLowerCase();
-    if(txt.includes('malicious')||txt.includes('trojan')||txt.includes('phish')) return 'malicious';
-    return 'safe';
-  }
-  if(p.ok === false) return 'suspicious';
-  if(p.note && /not configured|skip/i.test(p.note)) return 'suspicious';
-  if(p.raw || p.analysis) return 'safe';
-  return 'suspicious';
-}
-function providerSummaryText(p){
-  if(!p) return '';
-  if(p.error) return 'Error: ' + p.error;
-  if(p.note) return p.note;
-  if(p.name && /virus/i.test(p.name)){
-    const stats = p.analysis?.data?.attributes?.stats || p.raw?.data?.attributes?.last_analysis_stats;
-    if(stats) return `malicious:${stats.malicious||0} suspicious:${stats.suspicious||0} undetected:${stats.undetected||0}`;
-  }
-  if(p.name && /urlscan/i.test(p.name)){
-    if(p.result?.page?.title) return p.result.page.title;
-    if(p.raw?.task?.url) return p.raw.task.url;
-  }
-  if(p.raw && typeof p.raw === 'string') return p.raw.slice(0,200);
-  if(p.raw && p.raw.message) return p.raw.message;
-  return '';
-}
-
-// Generic fetch wrapper
-async function postJSON(path, body){
-  const url = WORKER_BASE + path;
-  const resp = await fetch(url, {
-    method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body)
-  });
-  if(!resp.ok) throw new Error('HTTP '+resp.status+' '+resp.statusText);
-  return resp.json();
-}
-
-/* ----------------------
-   Single URL scan flow
-   ---------------------- */
-$('check-url').addEventListener('click', async () => {
-  const rawUrl = $('url-input').value.trim();
-  if(!rawUrl) return alert('Enter a URL');
-  let url = rawUrl;
-  if(!/^https?:\/\//i.test(url)) url = 'http://' + url;
-
-  // UI reset
-  $('results-url').innerHTML = '';
-  $('combined-fill').style.width = '0%';
-  $('combined-percent').textContent = '—';
-  $('raw-output').textContent = '';
-
-  try {
-    // call worker
-    const j = await postJSON('/api/check/url', { url });
-
-    // group providers by feature and render only URL-relevant providers
-    const providers = j.providers || [];
-    renderProviders($('results-url'), providers, 'url');
-
-    // combined score
-    const percent = scoreFromProviders(providers);
-    $('combined-fill').style.width = percent + '%';
-    $('combined-percent').textContent = percent + '%';
-
-    // also place raw output in debug
-    $('raw-output').textContent = JSON.stringify({ queried: j.queried, providers }, null, 2);
-
-  } catch (err) {
-    console.error(err);
-    $('results-url').innerHTML = '<div class="provider"><div>Error contacting worker</div><div class="meta">'+escapeHtml(String(err))+'</div></div>';
-  }
-});
-
-/* ----------------------
-   Bulk CSV scanning
-   ---------------------- */
-$('sample-csv').addEventListener('click', (e) => {
-  // provide a sample CSV payload
-  const sample = `https://example.com\nhttps://www.amtso.org/check-phishing-page/\npaypal.com.secure-login-update.verify-account.info\n`;
-  const blob = new Blob([sample], { type: 'text/csv' });
+function downloadCsv(filename, rows, headers){
+  if (!rows || !rows.length) return;
+  const head = headers.join(',');
+  const body = rows.map(r => headers.map(h => {
+    const val = (r[h] ?? '').toString().replace(/"/g,'""');
+    if (/[",\n]/.test(val)) return `"${val}"`;
+    return val;
+  }).join(',')).join('\n');
+  const blob = new Blob([head + '\n' + body], { type:'text/csv' });
   const url = URL.createObjectURL(blob);
-  $('sample-csv').href = url;
-  setTimeout(()=> URL.revokeObjectURL(url), 20000);
-});
-
-function parseCSVLines(text){
-  return text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length>0);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
-$('bulk-start').addEventListener('click', async () => {
-  const file = $('csv-file').files?.[0];
-  if(!file) return alert('Select a CSV or click "Download sample.csv" to get a template.');
-  const text = await file.text();
-  const lines = parseCSVLines(text);
-  if(lines.length===0) return alert('CSV is empty.');
+// Hash file with SHA-256 using Web Crypto.
+async function hashFileSha256(file){
+  const buf = await file.arrayBuffer();
+  const hash = await crypto.subtle.digest('SHA-256', buf);
+  const bytes = Array.from(new Uint8Array(hash));
+  return bytes.map(b => b.toString(16).padStart(2,'0')).join('');
+}
 
-  $('bulk-results').innerHTML = '';
-  $('bulk-progress').classList.remove('hidden');
-  $('download-results').classList.add('hidden');
+// ---------- Single URL scan ----------
 
-  const results = [];
-  for(let i=0;i<lines.length;i++){
-    const rawUrl = lines[i];
-    let url = rawUrl;
-    if(!/^https?:\/\//i.test(url)) url = 'http://' + url;
+let lastUrlProviders = [];
+let lastBulkRows = [];
+let lastEmailProviders = [];
 
-    $('bulk-status').textContent = `Checking ${i+1}/${lines.length} — ${url}`;
-    $('bulk-bar').style.width = Math.round(((i+1)/lines.length)*100)+'%';
+const urlInput = $('url-input');
+const btnUrlScan = $('btn-url-scan');
+const urlProvidersEl = $('url-providers');
+const btnUrlDownload = $('btn-url-download');
+const rawOutput = $('raw-output');
 
-    try {
-      const j = await postJSON('/api/check/url', { url });
-      const providers = j.providers || [];
-      const verdict = (() => {
-        const p = providers.map(inferVerdict);
-        if(p.includes('malicious')) return 'malicious';
-        if(p.includes('suspicious')) return 'suspicious';
-        return 'safe';
-      })();
-      results.push({ url, verdict, providers });
+btnUrlScan.addEventListener('click', async () => {
+  const target = urlInput.value.trim();
+  if (!target) return;
 
-      const li = document.createElement('li');
-      li.innerHTML = `<div>${escapeHtml(url)}</div><div><span class="badge ${verdict}">${verdict}</span> <button class="btn raw-btn">Raw</button></div>`;
-      li.querySelector('.raw-btn').addEventListener('click', ()=> { $('raw-output').textContent = JSON.stringify(j, null, 2); document.querySelector('[data-tab="tab-raw"]').click(); });
-      $('bulk-results').appendChild(li);
+  btnUrlScan.disabled = true;
+  btnUrlScan.textContent = 'Scanning…';
 
-    } catch (err) {
-      const li = document.createElement('li');
-      li.innerHTML = `<div>${escapeHtml(url)}</div><div><span class="badge suspicious">error</span></div>`;
-      $('bulk-results').appendChild(li);
-      results.push({ url, verdict:'error', error:String(err) });
+  try {
+    const data = await postJSON('/api/check/url', { url: target });
+    lastUrlProviders = data.providers || [];
+    renderProviders(urlProvidersEl, lastUrlProviders, 'url');
+
+    rawOutput.textContent = JSON.stringify(data, null, 2);
+    rawOutput.classList.remove('hidden');
+
+    btnUrlDownload.disabled = !lastUrlProviders.length;
+  } catch (e){
+    urlProvidersEl.innerHTML = `<div class="small-note">Error: ${e.message}</div>`;
+  } finally {
+    btnUrlScan.disabled = false;
+    btnUrlScan.textContent = 'Scan URL';
+  }
+});
+
+btnUrlDownload.addEventListener('click', () => {
+  if (!lastUrlProviders.length) return;
+  const rows = lastUrlProviders.map(p => ({
+    provider: p.name || '',
+    verdict: inferVerdict(p),
+    ok: String(p.ok),
+    note: p.note || p.error || ''
+  }));
+  downloadCsv('url_scan_results.csv', rows, ['provider','verdict','ok','note']);
+});
+
+// ---------- Bulk CSV scan ----------
+
+const bulkFileInput = $('bulk-file');
+const btnBulkScan = $('btn-bulk-scan');
+const bulkBar = $('bulk-bar');
+const bulkPercent = $('bulk-percent');
+const bulkResultsEl = $('bulk-results');
+const btnBulkDownload = $('btn-bulk-download');
+
+btnBulkScan.addEventListener('click', async () => {
+  const file = bulkFileInput.files && bulkFileInput.files[0];
+  if (!file) return;
+
+  btnBulkScan.disabled = true;
+  btnBulkScan.textContent = 'Parsing…';
+  bulkResultsEl.innerHTML = '';
+  bulkBar.style.width = '0%';
+  bulkPercent.textContent = '0%';
+  lastBulkRows = [];
+
+  try {
+    const text = await file.text();
+    const rows = parseCsv(text);
+    if (!rows.length) throw new Error('No URLs found in CSV');
+
+    const total = rows.length;
+    let completed = 0;
+
+    for (const row of rows){
+      completed++;
+      const pct = Math.round((completed / total) * 100);
+      bulkBar.style.width = pct + '%';
+      bulkPercent.textContent = pct + '%';
+
+      let li = document.createElement('li');
+      li.textContent = `[Pending] ${row.url}`;
+      bulkResultsEl.appendChild(li);
+
+      try {
+        const data = await postJSON('/api/check/url', { url: row.url });
+        const providers = data.providers || [];
+        const vList = providers
+          .filter(p => p.ok !== false)
+          .map(p => inferVerdict(p));
+        const worst =
+          vList.includes('malicious') ? 'malicious' :
+          vList.includes('suspicious') ? 'suspicious' :
+          'safe';
+
+        li.textContent = `${row.url} — ${worst.toUpperCase()}${row.label ? ' ('+row.label+')' : ''}`;
+
+        lastBulkRows.push({
+          url: row.url,
+          label: row.label || '',
+          verdict: worst
+        });
+      } catch (e){
+        li.textContent = `${row.url} — ERROR: ${e.message}`;
+      }
     }
-  }
 
-  $('bulk-status').textContent = `Finished ${lines.length} URLs`;
-  $('download-results').classList.remove('hidden');
-
-  $('download-results').onclick = () => {
-    const csv = results.map(r => `"${r.url}","${r.verdict}"`).join('\n');
-    const blob = new Blob([csv], { type:'text/csv' });
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'pd_results.csv'; a.click();
-    URL.revokeObjectURL(a.href);
-  };
-});
-
-/* ----------------------
-   Email scan (domain checks via DNS DoH + OTX if available)
-   ---------------------- */
-$('check-email').addEventListener('click', async () => {
-  const email = $('email-input').value.trim();
-  if(!email || !/@/.test(email)) return alert('Enter a valid email');
-  const domain = email.split('@')[1];
-
-  $('results-email').innerHTML = '';
-  $('raw-output').textContent = '';
-
-  try {
-    const j = await postJSON('/api/check/email', { email });
-    // show only email-relevant providers
-    renderProviders($('results-email'), j.providers || [], 'email');
-    $('raw-output').textContent = JSON.stringify(j, null, 2);
-  } catch (err) {
-    $('results-email').innerHTML = `<div class="provider"><div>Error</div><div class="meta">${escapeHtml(String(err))}</div></div>`;
+    btnBulkDownload.disabled = !lastBulkRows.length;
+    // The combined bar is updated from the last response implicitly through renderProviders;
+    // for bulk we keep combined as-is from URL/email scans.
+  } catch (e){
+    bulkResultsEl.innerHTML = `<li class="small-note">Error: ${e.message}</li>`;
+  } finally {
+    btnBulkScan.disabled = false;
+    btnBulkScan.textContent = 'Scan CSV';
   }
 });
 
-/* ----------------------
-   OCR Image upload and scanning
-   ---------------------- */
-const OCR_MAX_BYTES = 2 * 1024 * 1024; // 2MB
+btnBulkDownload.addEventListener('click', () => {
+  if (!lastBulkRows.length) return;
+  downloadCsv('bulk_url_results.csv', lastBulkRows, ['url','label','verdict']);
+});
 
-$('ocr-run').addEventListener('click', async () => {
-  const file = $('ocr-file').files?.[0];
-  if(!file) return alert('Choose an image first');
-  if(file.size > OCR_MAX_BYTES) return alert('Image too large (max 2 MB)');
+// ---------- Email domain & OCR hash ----------
 
-  $('ocr-output').innerHTML = `<div class="provider"><div>Running OCR…</div></div>`;
+const emailInput = $('email-input');
+const btnEmailScan = $('btn-email-scan');
+const emailBar = $('email-bar');
+const emailStatus = $('email-status');
+const emailProvidersEl = $('email-providers');
+const btnEmailDownload = $('btn-email-download');
+
+const ocrFileInput = $('ocr-file');
+const btnOcrScan = $('btn-ocr-scan');
+
+btnEmailScan.addEventListener('click', async () => {
+  const email = emailInput.value.trim();
+  if (!email) return;
+
+  btnEmailScan.disabled = true;
+  btnEmailScan.textContent = 'Scanning…';
+  emailBar.style.width = '25%';
+  emailStatus.textContent = 'Querying DNS / OTX…';
+
   try {
-    // Run Tesseract in-browser
-    const { data: { text } } = await Tesseract.recognize(file, 'eng', { logger: m => {/* optional logs */} });
-    const found = Array.from(new Set((text.match(/https?:\/\/[^\s)'"<>]+/ig)||[])));
-    $('ocr-output').innerHTML = `<div class="provider"><div>OCR extracted ${found.length} URLs</div></div>`;
-    if(found.length===0) return;
+    const data = await postJSON('/api/check/email', { email });
+    lastEmailProviders = data.providers || [];
+    renderProviders(emailProvidersEl, lastEmailProviders, 'email');
 
-    // For each extracted URL, call the worker
-    const providersContainer = document.createElement('div');
-    providersContainer.className = 'results';
-    $('ocr-output').appendChild(providersContainer);
+    rawOutput.textContent = JSON.stringify(data, null, 2);
+    rawOutput.classList.remove('hidden');
 
-    for(const u of found){
-      const j = await postJSON('/api/check/url', { url: u });
-      const box = document.createElement('div');
-      box.className = 'provider';
-      const verdict = (() => { const v = (j.providers||[]).map(inferVerdict); if(v.includes('malicious')) return 'malicious'; if(v.includes('suspicious')) return 'suspicious'; return 'safe'; })();
-      box.innerHTML = `<div><strong>${escapeHtml(u)}</strong><div class="meta">OCR found link</div></div><div><span class="badge ${verdict}">${verdict}</span><button class="btn raw-btn">Raw</button></div>`;
-      box.querySelector('.raw-btn').addEventListener('click', ()=> { $('raw-output').textContent = JSON.stringify(j, null, 2); document.querySelector('[data-tab="tab-raw"]').click();});
-      providersContainer.appendChild(box);
-    }
-
-  } catch (err) {
-    $('ocr-output').innerHTML = `<div class="provider"><div>Error</div><div class="meta">${escapeHtml(String(err))}</div></div>`;
+    emailBar.style.width = '100%';
+    emailStatus.textContent = 'Completed';
+    btnEmailDownload.disabled = !lastEmailProviders.length;
+  } catch (e){
+    emailProvidersEl.innerHTML = `<div class="small-note">Error: ${e.message}</div>`;
+    emailStatus.textContent = 'Error';
+  } finally {
+    btnEmailScan.disabled = false;
+    btnEmailScan.textContent = 'Scan email domain';
+    setTimeout(() => { emailBar.style.width = '0%'; }, 1500);
   }
 });
 
-/* ----------------------
-   Key status / debug
-   ---------------------- */
-$('key-status').addEventListener('click', async () => {
-  $('raw-output').textContent = 'Querying worker…';
-  try {
-    const resp = await fetch(WORKER_BASE + '/api/key-status');
-    if(!resp.ok) throw new Error('HTTP '+resp.status);
-    const j = await resp.json();
-    $('raw-output').textContent = JSON.stringify(j, null, 2);
-  } catch (err) {
-    $('raw-output').textContent = String(err);
+btnOcrScan.addEventListener('click', async () => {
+  const file = ocrFileInput.files && ocrFileInput.files[0];
+  if (!file) return;
+
+  // Enforce size limit ~5MB
+  if (file.size > 5 * 1024 * 1024){
+    emailStatus.textContent = 'File too large (max 5MB)';
+    return;
   }
+
+  btnOcrScan.disabled = true;
+  btnOcrScan.textContent = 'Hashing…';
+  emailBar.style.width = '30%';
+  emailStatus.textContent = 'Hashing attachment (SHA-256)…';
+
+  try {
+    const sha256 = await hashFileSha256(file);
+    emailBar.style.width = '60%';
+    emailStatus.textContent = 'Querying file hash feeds…';
+
+    const data = await postJSON('/api/check/image', { sha256 });
+    const providers = data.providers || [];
+
+    // Merge into email providers section but filtered as file
+    renderProviders(emailProvidersEl, providers, 'file');
+
+    rawOutput.textContent = JSON.stringify(data, null, 2);
+    rawOutput.classList.remove('hidden');
+
+    emailBar.style.width = '100%';
+    emailStatus.textContent = 'Completed';
+    lastEmailProviders = providers;
+    btnEmailDownload.disabled = !lastEmailProviders.length;
+  } catch (e){
+    emailProvidersEl.innerHTML = `<div class="small-note">Error: ${e.message}</div>`;
+    emailStatus.textContent = 'Error';
+  } finally {
+    btnOcrScan.disabled = false;
+    btnOcrScan.textContent = 'Scan attachment hash (OCR feed)';
+    setTimeout(() => { emailBar.style.width = '0%'; }, 1500);
+  }
+});
+
+btnEmailDownload.addEventListener('click', () => {
+  if (!lastEmailProviders.length) return;
+  const rows = lastEmailProviders.map(p => ({
+    provider: p.name || '',
+    verdict: inferVerdict(p),
+    ok: String(p.ok),
+    note: p.note || p.error || ''
+  }));
+  downloadCsv('email_ocr_results.csv', rows, ['provider','verdict','ok','note']);
 });
