@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Phish-Defender — Phishing Checker</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body class="theme-dark">
+  <header class="topbar">
+    <div class="brand">Phish-Defender</div>
+    <div class="controls">
+      <button id="theme-toggle" title="Toggle dark/light">🌗</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <h1>Phish-Defender</h1>
+      <p class="subtitle">Single-page phishing scanner — single URL, bulk CSV, email checks and OCR image extraction. Keys live in your Cloudflare Worker.</p>
+    </section>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="tab-url">URL</button>
+      <button class="tab" data-tab="tab-bulk">Bulk CSV</button>
+      <button class="tab" data-tab="tab-email">Email</button>
+      <button class="tab" data-tab="tab-ocr">OCR (Image)</button>
+      <button class="tab" data-tab="tab-raw">Raw / Debug</button>
+    </nav>
+
+    <!-- URL tab -->
+    <section id="tab-url" class="panel">
+      <div class="panel-row">
+        <label class="input-group">
+          <span>Enter URL</span>
+          <input id="url-input" placeholder="https://example.com" />
+          <button id="check-url" class="btn-primary">Scan URL</button>
+        </label>
+      </div>
+
+      <div class="panel-row score-row">
+        <div class="score">
+          <div class="score-label">Combined Score</div>
+          <div class="score-bar" id="combined-bar"><div id="combined-fill"></div></div>
+          <div id="combined-percent">—</div>
+        </div>
+        <div class="provider-filters">
+          <small>Showing providers relevant to URL checks</small>
+        </div>
+      </div>
+
+      <div id="results-url" class="results"></div>
+    </section>
+
+    <!-- Bulk CSV tab -->
+    <section id="tab-bulk" class="panel hidden">
+      <div class="panel-row">
+        <label class="input-group">
+          <span>Upload CSV (one URL per line)</span>
+          <input id="csv-file" type="file" accept=".csv,.txt" />
+        </label>
+        <button id="bulk-start" class="btn-primary">Upload & Scan CSV</button>
+        <a id="sample-csv" href="#" download="sample.csv" class="link">Download sample.csv</a>
+      </div>
+
+      <div id="bulk-progress" class="bulk-progress hidden">
+        <div id="bulk-status">Preparing…</div>
+        <div class="progress"><div id="bulk-bar"></div></div>
+      </div>
+
+      <ul id="bulk-results" class="bulk-results"></ul>
+      <div class="panel-row">
+        <button id="download-results" class="btn">Download Results CSV</button>
+      </div>
+    </section>
+
+    <!-- Email tab -->
+    <section id="tab-email" class="panel hidden">
+      <div class="panel-row">
+        <label class="input-group">
+          <span>Email address</span>
+          <input id="email-input" placeholder="user@example.com" />
+          <button id="check-email" class="btn-primary">Scan Email / Domain</button>
+        </label>
+      </div>
+
+      <div class="panel-row">
+        <div id="results-email" class="results"></div>
+      </div>
+    </section>
+
+    <!-- OCR tab -->
+    <section id="tab-ocr" class="panel hidden">
+      <div class="panel-row">
+        <label class="input-group">
+          <span>Upload JPG/PNG (max 2 MB)</span>
+          <input id="ocr-file" type="file" accept="image/jpeg,image/png" />
+        </label>
+        <div class="small-note">OCR runs in your browser (tesseract.js). Extracted URLs are scanned automatically.</div>
+        <button id="ocr-run" class="btn-primary">Run OCR & Scan</button>
+      </div>
+
+      <div class="panel-row">
+        <div id="ocr-output" class="results"></div>
+      </div>
+    </section>
+
+    <!-- Raw / debug -->
+    <section id="tab-raw" class="panel hidden">
+      <div class="panel-row">
+        <label class="input-group">
+          <span>Raw Worker status</span>
+          <button id="key-status" class="btn">Check Key Status</button>
+        </label>
+      </div>
+      <pre id="raw-output" class="raw"></pre>
+    </section>
+
+    <footer class="footer">
+      <small>Phish-Defender — Demo (non-commercial). Keep API keys secret in Cloudflare Worker. Use responsibly.</small>
+    </footer>
+  </main>
+
+  <!-- Load Tesseract for OCR -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@v4.1.1/dist/tesseract.min.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
