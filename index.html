@@ -20,9 +20,7 @@
   <main class="container">
     <section class="hero">
       <h1>Cyberdefender Recon Console</h1>
-      <p class="subtitle">
-        Multi‑source intelligence for URLs, bulk lists, email domains & attachments – powered by your Cloudflare Worker.
-      </p>
+   
 
       <!-- Global combined score -->
       <div class="score-row">
@@ -144,15 +142,24 @@
       </div>
     </section>
 
-  <footer class="small-footer">
-    <span class="small-note">
-      Backend: Cloudflare Worker proxy hitting threat‑intel APIs via <code>fetch()</code>. Configure API keys as secrets in your Worker environment. [VT, urlscan.io, URLHaus, AbuseIPDB, AlienVault OTX, Filescan.io, MalShare]
-    </span>
-  </footer>
+<footer class="footer">
+  <div class="footer-left">
+    <div class="footer-title">PHISH DEFENDER // LAB CONSOLE</div>
+    <div class="footer-tagline">
+      Cloudflare Worker–powered threat intel hub for URLs, bulk lists & email surfaces. For training and demo use only.
+    </div>
+  </div>
+
+  <div class="footer-right">
+    <span class="footer-pill">Cloudflare Worker: READY</span>
+    <span class="footer-meta">v1.0 • SOC view</span>
+  </div>
+</footer>
 
   <script src="assets/app.js"></script>
 </body>
 </html>
+
 
 
 
