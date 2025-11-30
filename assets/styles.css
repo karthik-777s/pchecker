@@ -490,6 +490,19 @@ body.theme-light{
   background:#e5e7eb;
 }
 
+/* Fix panel badges in light theme */
+body.theme-light .panel-badge{
+  background:#e5edff;                 /* light blue pill */
+  border-color:rgba(148,163,184,0.8);
+  color:#111827;                       /* dark navy text */
+}
+
+body.theme-light .panel-badge.subtle{
+  background:#eef2ff;
+  color:#111827;
+  opacity:0.9;
+}
+
 /* shell */
 body.theme-light .topbar{
   background:#ffffff;
@@ -584,3 +597,4 @@ body.theme-light .footer-pill{
     align-items:flex-start;
   }
 }
+
